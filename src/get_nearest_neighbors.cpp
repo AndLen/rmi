@@ -1,4 +1,4 @@
-#include <RcppArmadillo.h>
+#include <armadillo>
 #include "flann/flann.hpp"
 
 using namespace std;
@@ -42,27 +42,4 @@ void get_nearest_neighbors(arma::mat X,
   X_dist = dists.t();
 
   return;
-}
-
-
-/**
- C++ function that gets nearest neighbors
-Isaac Michaud - 02/14/2018
-
-@param  data matrix
-@param  k number of neighbors
-@return list with C++ indices and max norm distances
-*/
-
-
-// [[Rcpp::export]]
-Rcpp::List nearest_neighbors(arma::mat data, int k) {
-  int K = k+1;
-  int N = data.n_rows;
-  arma::imat nn_inds(N,K);
-  arma::mat  nn_dist(N,K);
-
-  get_nearest_neighbors(data, nn_dist, nn_inds,k);
-  return Rcpp::List::create(Rcpp::Named("nn_dist") = nn_dist,
-                            Rcpp::Named("nn_inds") = nn_inds);
 }

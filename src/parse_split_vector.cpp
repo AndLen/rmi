@@ -1,5 +1,5 @@
-#include <RcppArmadillo.h>
 using namespace std;
+#include <armadillo>
 
 /**
  parses split vector into start and end indices
@@ -10,8 +10,7 @@ using namespace std;
  @return end column indices (e.g. c(0,2,5) )
 */
 
-// [[Rcpp::export]]
-void parse_split_vector(Rcpp::NumericVector splits,
+void parse_split_vector(arma::icolvec& splits,
                         arma::icolvec& d,
                         arma::icolvec& start_d,
                         arma::icolvec& end_d) {

@@ -1,28 +1,33 @@
-#include <RcppArmadillo.h>
+#include <armadillo>
 #include <cmath>
 #include <boost/math/special_functions/digamma.hpp>
 #include "parse_split_vector.h"
 #include "get_nearest_neighbors.h"
 #include "lnc_compute.h"
+#include "featureLearn_CallCPPcode.h"
 using namespace std;
 
 //' kNN Mutual Information Estimators
 //'
-//' Computes mutual information based on the distribution of nearest neighborhood distances as described by Kraskov, et. al (2004).
+//' Computes mutual information based on the distribution of nearest neighborhood distances. Method available are KSG1 and KSG2 as described by Kraskov, et. al (2004) and the Local Non-Uniformity Corrected (LNC) KSG as described by Gao, et. al (2015). The LNC method is based on KSG2  but with PCA volume corrections to adjust for observed non-uniformity of the local neighborhood of each point in the sample.
 //'
-//' @param  data matrix. Each row is an observation.
-//' @param  splits vector. Describes which sets of columns in \code{data} to compute the mutual information between. For example, to compute mutual information between two variables use \code{splits = c(1,1)}. To compute \emph{redundancy} among multiple random variables use \code{splits = rep(1,ncol(data))}. To compute the mutual information between two random vector list the dimensions of each vector.
-//' @param  options list. Specifies estimator and necessary parameters. See Details.
-//' @section Details: Current types of methods that are available are methods LNC, KSG1 and KSG2
-//' \code{list(method = "KSG2", k = 6)}
-//' @return estimated mutual information
+//' @param  data Matrix of sample observations, each row is an observation.
+//' @param  splits A vector that describes which sets of columns in \code{data} to compute the mutual information between. For example, to compute mutual information between two variables use \code{splits = c(1,1)}. To compute \emph{redundancy} among multiple random variables use \code{splits = rep(1,ncol(data))}. To compute the mutual information between two random vector list the dimensions of each vector.
+//' @param  options A list that specifies the estimator and its necessary parameters (see details).
+//' @section Details: Current available methods are LNC, KSG1 and KSG2.
+//'
+//' For KSG1 use: \code{options = list(method = "KSG1", k = 5)}
+//'
+//' For KSG2 use: \code{options = list(method = "KSG2", k = 5)}
+//'
+//' For LNC use: \code{options = list(method = "LNC", k = 10, alpha = 0.65)}, order needed \code{k > ncol(data)}.
+//'
 //' @section Author:
 //' Isaac Michaud, North Carolina State University, \email{ijmichau@ncsu.edu}
 //' @section References:
-//' Gao, Shuyang, Greg Ver Steeg, and Aram Galstyan. 2015. "Efficient estimation of mutual information for strongly dependent variables." Artificial Intelligence and Statistics: 277-286.
+//' Gao, S., Ver Steeg G., & Galstyan A. (2015). Efficient estimation of mutual information for strongly dependent variables. Artificial Intelligence and Statistics: 277-286.
 //'
-//' Kraskov, Alexander, Harald Stogbauer, and Peter Grassberger. 2004. "Estimating mutual information." Physical review E 69(6): 066138.
-//'
+//' Kraskov, A., Stogbauer, H., & Grassberger, P. (2004). Estimating mutual information. Physical review E 69(6): 066138.
 //' @examples
 //' set.seed(123)
 //' x <- rnorm(1000)
@@ -46,28 +51,73 @@ using namespace std;
 //' @useDynLib rmi
 //'
 // [[Rcpp::export]]
-double knn_mi(arma::mat data,
-              Rcpp::NumericVector splits,
-              const Rcpp::List & options) {
+//  void releaseMatrixArray(JNIEnv *env, jobjectArray matrix) {
+ // int size = env -> GetArrayLength(matrix);
+ // for (int i = 0; i < size; i++) {
+ //     jdoubleArray oneDim = (jdoubleArray) env->GetObjectArrayElement(matrix, i);
+ //     jdouble *elements = env -> GetDoubleArrayElements(oneDim, 0);
 
-  std::string method = Rcpp::as<std::string>(options["method"]);
-  int              k = Rcpp::as<int>(options["k"]);
+ //     env->ReleaseDoubleArrayElements(oneDim, elements, 0);
+ //     env->DeleteLocalRef(oneDim);
+ //   }
+ // }
+
+arma::mat convertToMat(JNIEnv *env, jobjectArray source,jobjectArray dest){
+    jsize rowCount = env -> GetArrayLength(source);
+    jdoubleArray sourceDim=  (jdoubleArray)env->GetObjectArrayElement(source, 0);
+    int sourceCols = env -> GetArrayLength(sourceDim);
+    env -> DeleteLocalRef(sourceDim);
+    jdoubleArray destDim=  (jdoubleArray)env->GetObjectArrayElement(dest, 0);
+    int destCols = env -> GetArrayLength(destDim);
+    env -> DeleteLocalRef(destDim);
+    arma::mat dataMat(rowCount,sourceCols+destCols);
+
+    for(int i=0; i<rowCount; ++i){
+        jdoubleArray oneDim= (jdoubleArray)env->GetObjectArrayElement(source, i);
+        jdouble *element=env->GetDoubleArrayElements(oneDim, 0);
+        for(int j=0; j<sourceCols; ++j) {
+            dataMat(i,j) = element[j];
+       //     printf("%f\n",dataMat(i,j));
+        }
+        env->ReleaseDoubleArrayElements(oneDim,element,0);
+        env->DeleteLocalRef(oneDim);
+        jdoubleArray twoDim = (jdoubleArray)env->GetObjectArrayElement(dest,i);
+        jdouble *element2=env->GetDoubleArrayElements(twoDim,0);
+        for(int j=0; j<destCols; ++j) {
+            dataMat(i,j+sourceCols) = element2[j];
+         //   printf("%f\n",dataMat(i,j+sourceCols));
+        }
+        env->ReleaseDoubleArrayElements(twoDim,element2,0);
+        env->DeleteLocalRef(twoDim);
+
+    }
+    return dataMat;
+}
+
+
+double knn_mi(arma::mat data,
+              arma::icolvec splits,
+              std::string method,
+              int k,
+              arma::colvec alpha) {
+
+
   int            lnc = 0;
 
   int K     = k+1;
   int N     = data.n_rows;
-  int vars  = splits.length();
-  arma::colvec alpha(vars+1);
+  //printf("N: %d\n", N);
+  int vars  = splits.n_elem;
 
   if (method == "LNC") {
     lnc     = 1;
     method  = "KSG2";
-    alpha   = Rcpp::as<arma::colvec>(options["alpha"]);
-    for (int i = 0; i < alpha.size(); i++) {
-      if (alpha(i) >= 0) {
-        alpha(i) = log(alpha(i));
-      }
-    }
+    //alpha   = Rcpp::as<arma::colvec>(options["alpha"]);
+    for (uint i = 0; i < alpha.size(); i++) {
+          if (alpha(i) >= 0) {
+            alpha(i) = log(alpha(i));
+          }
+        }
   }
 
   arma::imat nn_inds(N,K);
@@ -203,4 +253,28 @@ double knn_mi(arma::mat data,
 
   return mi + lnc_correction/(double)N;
 }
+
+
+JNIEXPORT jdouble JNICALL Java_featureLearn_CallCPPcode_computeMICPP
+  (JNIEnv *env, jclass class1, jobjectArray source, jobjectArray target){
+  arma::mat data = convertToMat(env,source,target);
+
+    jdoubleArray sourceDim =  (jdoubleArray)env->GetObjectArrayElement(source, 0);
+    int sourceCols = env -> GetArrayLength(sourceDim);
+    env -> DeleteLocalRef(sourceDim);
+    jdoubleArray destDim=  (jdoubleArray)env->GetObjectArrayElement(target, 0);
+    int destCols = env -> GetArrayLength(destDim);
+    env -> DeleteLocalRef(destDim);
+    arma::icolvec splits = {sourceCols,destCols};
+    arma::colvec alpha = {0.68, 0.68, 0.68};
+
+    //releaseMatrixArray(env,source);
+    env->DeleteLocalRef(source);
+    //releaseMatrixArray(env,target);
+    env->DeleteLocalRef(target);
+    //printf("%d,%d,%d\n",rowCount,sourceCols,destCols);
+    double mi = knn_mi(data,splits,"KSG2",5,alpha);
+
+    return mi;
+  }
 
